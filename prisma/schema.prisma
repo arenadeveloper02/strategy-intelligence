@@ -1,0 +1,15 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model ReportRun {
+  id          String   @id @default(cuid())
+  companyName String
+  status      String
+  createdAt   DateTime @default(now())
+}
