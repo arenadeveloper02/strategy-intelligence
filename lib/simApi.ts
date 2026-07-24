@@ -10,13 +10,13 @@ export const RUN_PATH = ''; // POST {baseUrl}{RUN_PATH} -> starts the job, retur
 export const STATUS_PATH = '/status/{id}'; // GET {baseUrl}/status/{id} -> returns status
 export const OUTPUT_PATH = '/output/{id}'; // GET {baseUrl}/output/{id} -> final output (fallback)
 
-// Extra headers sent only on the start request. Sim deployments typically
+// Extra headers sent only on the async start request. Sim deployments typically
 // accept an async execution mode hint; harmless if the API ignores it.
 export const RUN_EXTRA_HEADERS: Record<string, string> = {
   'X-Execution-Mode': 'async',
 };
 
-export const MAX_WAIT_MS = 15 * 60 * 1000; // overall polling safety cap (~15 min)
+export const MAX_WAIT_MS = 15 * 60 * 1000; // overall safety cap (~15 min)
 
 const COMPLETE_STATUSES = ['completed', 'complete', 'success', 'succeeded', 'finished', 'done'];
 const FAILED_STATUSES = ['failed', 'error', 'errored', 'cancelled', 'canceled', 'timeout', 'timed_out'];
@@ -141,6 +141,176 @@ function resolveUrl(candidate: string, baseUrl: string): string {
   } catch {
     return candidate;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Streaming execution — mirrors the documented curl request:
+//   POST {baseUrl} with JSON body including "stream": true and the X-API-Key
+//   header. The response is read incrementally (SSE / NDJSON / raw text) and
+//   the final report is assembled from streamed chunks or a final JSON event.
+// ---------------------------------------------------------------------------
+
+export interface StreamCallbacks {
+  isCancelled: () => boolean;
+  onChunk?: (receivedChars: number) => void;
+}
+
+interface StreamLineResult {
+  output: FinalOutput | null;
+  text: string;
+}
+
+function textFromStreamEvent(value: unknown): string {
+  if (!isRecord(value)) return '';
+  const directKeys = ['chunk', 'content', 'text'];
+  for (const key of directKeys) {
+    const candidate = value[key];
+    if (typeof candidate === 'string') return candidate;
+  }
+  const delta = value.delta;
+  if (typeof delta === 'string') return delta;
+  if (isRecord(delta) && typeof delta.content === 'string') return delta.content;
+  const choices = value.choices;
+  if (Array.isArray(choices) && choices.length > 0) {
+    const first: unknown = choices[0];
+    if (isRecord(first)) {
+      const d = first.delta;
+      if (isRecord(d) && typeof d.content === 'string') return d.content;
+    }
+  }
+  const data = value.data;
+  if (isRecord(data)) {
+    for (const key of directKeys) {
+      const candidate = data[key];
+      if (typeof candidate === 'string') return candidate;
+    }
+  }
+  return '';
+}
+
+function processStreamLine(line: string): StreamLineResult {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) return { output: null, text: '' };
+  if (
+    trimmed.startsWith(':') ||
+    trimmed.startsWith('event:') ||
+    trimmed.startsWith('id:') ||
+    trimmed.startsWith('retry:')
+  ) {
+    return { output: null, text: '' };
+  }
+  const payload = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed;
+  if (payload.length === 0 || payload === '[DONE]') return { output: null, text: '' };
+  try {
+    const parsed: unknown = JSON.parse(payload);
+    const output = extractFinalOutput(parsed, 0);
+    if (output) return { output, text: '' };
+    return { output: null, text: textFromStreamEvent(parsed) };
+  } catch {
+    // Not JSON. Raw SSE data lines are treated as streamed report text.
+    if (trimmed.startsWith('data:')) {
+      return { output: null, text: payload + '\n' };
+    }
+    return { output: null, text: '' };
+  }
+}
+
+function parseRawStreamText(text: string): FinalOutput | null {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return null;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    const output = extractFinalOutput(parsed, 0);
+    if (output) return output;
+    return null;
+  } catch {
+    // not a JSON document
+  }
+  if (trimmed.startsWith('{') || trimmed.startsWith('[') || trimmed.startsWith('data:')) {
+    return null;
+  }
+  return { report: trimmed, company: '', file_saved: '' };
+}
+
+export async function executeStreamingRun(
+  conn: ConnectionSettings,
+  body: StrategyFormInput,
+  callbacks: StreamCallbacks
+): Promise<FinalOutput | null> {
+  const url = normalizeBase(conn.baseUrl) + RUN_PATH;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: buildHeaders(conn),
+    body: JSON.stringify({ ...body, stream: true }),
+  });
+  if (!res.ok && res.status !== 202) {
+    throw new ApiError(res.status, 'Failed to start the workflow run');
+  }
+  const contentType = (res.headers.get('content-type') ?? '').toLowerCase();
+  if (contentType.includes('application/json')) {
+    let json: unknown = null;
+    try {
+      json = await res.json();
+    } catch {
+      json = null;
+    }
+    return extractFinalOutput(json, 0);
+  }
+  const reader = res.body ? res.body.getReader() : null;
+  if (!reader) {
+    let text = '';
+    try {
+      text = await res.text();
+    } catch {
+      text = '';
+    }
+    return parseRawStreamText(text);
+  }
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let raw = '';
+  let accumulated = '';
+  let finalOutput: FinalOutput | null = null;
+  for (;;) {
+    if (callbacks.isCancelled()) {
+      try {
+        await reader.cancel();
+      } catch {
+        // ignore cancellation errors
+      }
+      return null;
+    }
+    const { done, value } = await reader.read();
+    if (value) {
+      const chunkText = decoder.decode(value, { stream: true });
+      raw += chunkText;
+      buffer += chunkText;
+      let newlineIndex = buffer.indexOf('\n');
+      while (newlineIndex !== -1) {
+        const line = buffer.slice(0, newlineIndex);
+        buffer = buffer.slice(newlineIndex + 1);
+        const parsedLine = processStreamLine(line);
+        if (parsedLine.output) finalOutput = parsedLine.output;
+        accumulated += parsedLine.text;
+        newlineIndex = buffer.indexOf('\n');
+      }
+      if (callbacks.onChunk) {
+        callbacks.onChunk(Math.max(accumulated.length, raw.length));
+      }
+    }
+    if (done) break;
+  }
+  buffer += decoder.decode();
+  if (buffer.trim().length > 0) {
+    const parsedLine = processStreamLine(buffer);
+    if (parsedLine.output) finalOutput = parsedLine.output;
+    accumulated += parsedLine.text;
+  }
+  if (finalOutput && finalOutput.report.trim().length > 0) return finalOutput;
+  if (accumulated.trim().length > 0) {
+    return { report: accumulated, company: body.company_name, file_saved: '' };
+  }
+  return parseRawStreamText(raw);
 }
 
 export async function startRun(

@@ -1,22 +1,21 @@
 # Repository Summary: strategy-intelligence
 
-> Auto-maintained by Sim Development. Last updated: 2026-07-24T10:22:37.894Z.
+> Auto-maintained by Sim Development. Last updated: 2026-07-24T10:47:07.660Z.
 
 ## Overview
 
-Healthcare Growth Strategist — generates a prioritized organic-growth strategy report via a hardcoded Sim workflow connection, plus a strategy-brief archive with categorized insights.
+Healthcare growth strategy generator that calls the Sim workflow execute endpoint with streaming enabled, renders the markdown report, and stores strategy briefs with categorized insights in Postgres.
 
 **Repository:** `strategy-intelligence`  
 **File count:** 34
 
 ## Features
 
-- One-click growth strategy generation with hardcoded API connection (no Connection card)
-- Optional priority service lines input
-- Live progress panel with staged workflow tracking
-- Markdown report view with copy, download, and print
-- Strategy brief archive with AI-generated categorized insights
-- Report run logging to Postgres
+- Streaming workflow execution via POST with stream:true against the Sim execute endpoint
+- Hardcoded X-API-Key authentication matching the provided curl request
+- Live progress panel with elapsed timer, stage indicators, and streamed-character status
+- Markdown report rendering with copy, download, and print actions
+- Strategy brief CRUD with categorized insights persisted in Neon Postgres
 
 ## Tech Stack
 
@@ -132,7 +131,17 @@ Healthcare Growth Strategist — generates a prioritized organic-growth strategy
 
 ## Latest Change
 
-- **Updated at:** 2026-07-24T10:22:37.894Z
-- **Request:** Remove the connections segment totally, and make priority service lines input as optional.
+- **Updated at:** 2026-07-24T10:47:07.660Z
+- **Request:** Use the Below Curl Request:
+curl -X POST \
+  -H "X-API-Key: $SIM_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"company_name":"example","website_url":"example","locations":"example","vertical":"example","competitors":"example","budget_tier":"example","priority_service_lines":"example","recipient_email":"example","stream":true}' \
+  https://agent.thearena.ai/api/workflows/bfb13140-ebef-4be9-a441-1eff11e6d1ea/execute
 
-Hardcode API- sk-sim-sSZ64q6IYVmaxO-TTCURWsPWZOcMm-RS
+
+
+Here is he API Key: sk-sim-Ef4OiRRFe5lN_P1oWWdvCIyrPhPkd7X3 
+
+
+You can hardcode the API Key

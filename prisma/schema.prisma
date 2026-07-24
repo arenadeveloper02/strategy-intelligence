@@ -23,9 +23,9 @@ model Insight {
   title     String
   content   String
   category  String
+  createdAt DateTime      @default(now())
   briefId   String
   brief     StrategyBrief @relation(fields: [briefId], references: [id], onDelete: Cascade)
-  createdAt DateTime      @default(now())
 }
 
 model ReportRun {
