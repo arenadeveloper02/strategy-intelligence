@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, HeartPulse } from 'lucide-react';
 import type {
-  AuthMode,
   ConnectionSettings,
   FinalOutput,
   RunPhase,
@@ -22,13 +21,20 @@ import {
   startRun,
 } from '@/lib/simApi';
 import { logReportRun } from '@/lib/actions';
-import ConnectionCard from '@/components/ConnectionCard';
 import StrategyForm from '@/components/StrategyForm';
 import ProgressPanel from '@/components/ProgressPanel';
 import ReportView from '@/components/ReportView';
 
-const DEFAULT_BASE_URL =
+const API_BASE_URL =
   'https://agent.thearena.ai/api/workflows/bfb13140-ebef-4be9-a441-1eff11e6d1ea/execute';
+const API_KEY = 'sk-sim-sSZ64q6IYVmaxO-TTCURWsPWZOcMm-RS';
+
+const CONNECTION: ConnectionSettings = {
+  baseUrl: API_BASE_URL,
+  apiKey: API_KEY,
+  authMode: 'x-api-key',
+  headerName: 'X-API-Key',
+};
 
 const EMPTY_FORM: StrategyFormInput = {
   company_name: '',
@@ -42,10 +48,6 @@ const EMPTY_FORM: StrategyFormInput = {
 };
 
 export default function StrategyAppClient() {
-  const [baseUrl, setBaseUrl] = useState(DEFAULT_BASE_URL);
-  const [apiKey, setApiKey] = useState('');
-  const [authMode, setAuthMode] = useState<AuthMode>('x-api-key');
-  const [headerName, setHeaderName] = useState('X-API-Key');
   const [form, setForm] = useState<StrategyFormInput>(EMPTY_FORM);
   const [phase, setPhase] = useState<RunPhase>('form');
   const [statusText, setStatusText] = useState('');
@@ -56,7 +58,6 @@ export default function StrategyAppClient() {
   const runTokenRef = useRef(0);
   const startTimeRef = useRef(0);
   const deadlineRef = useRef(0);
-  const connRef = useRef<ConnectionSettings | null>(null);
   const currentRunRef = useRef<{ id: string; statusUrl: string | null } | null>(null);
 
   useEffect(() => {
@@ -67,30 +68,28 @@ export default function StrategyAppClient() {
     return () => clearInterval(interval);
   }, [phase]);
 
-  const connectionReady = apiKey.trim().length > 0 && isValidUrl(baseUrl.trim());
   const requiredFilled = [
     form.company_name,
     form.website_url,
     form.locations,
     form.vertical,
-    form.priority_service_lines,
   ].every((field) => field.trim().length > 0);
   const formValid =
     requiredFilled &&
     isValidUrl(form.website_url.trim()) &&
     (form.recipient_email.trim().length === 0 || isValidEmail(form.recipient_email.trim()));
-  const canSubmit = connectionReady && formValid;
+  const canSubmit = formValid;
 
   function friendlyError(err: unknown): string {
     console.error('Workflow error', err);
     if (err instanceof ApiError) {
       if (err.status === 401 || err.status === 403) {
-        return `Check your API key — the server rejected the credentials (HTTP ${err.status}).`;
+        return `The server rejected the credentials (HTTP ${err.status}). Please try again later.`;
       }
-      return `The server responded with an error (HTTP ${err.status}). Verify the API Base URL and endpoint paths.`;
+      return `The server responded with an error (HTTP ${err.status}). Please try again.`;
     }
     if (err instanceof TypeError) {
-      return 'Network error — check the API Base URL and your internet connection, then try again.';
+      return 'Network error — check your internet connection, then try again.';
     }
     return 'Something unexpected went wrong. Please try again.';
   }
@@ -107,7 +106,7 @@ export default function StrategyAppClient() {
     void logReportRun(form.company_name.trim(), 'failed').catch(() => undefined);
   }
 
-  async function pollLoop(token: number, conn: ConnectionSettings): Promise<void> {
+  async function pollLoop(token: number): Promise<void> {
     let delay = 3000;
     let consecutiveFailures = 0;
     for (;;) {
@@ -125,7 +124,7 @@ export default function StrategyAppClient() {
         return;
       }
       try {
-        const poll = await fetchStatus(conn, run.id, run.statusUrl);
+        const poll = await fetchStatus(CONNECTION, run.id, run.statusUrl);
         if (token !== runTokenRef.current) return;
         consecutiveFailures = 0;
         const status = poll.status.toLowerCase();
@@ -133,7 +132,7 @@ export default function StrategyAppClient() {
         if (isCompleteStatus(status) || poll.output) {
           let output = poll.output;
           if (!output) {
-            output = await fetchOutput(conn, run.id);
+            output = await fetchOutput(CONNECTION, run.id);
           }
           if (token !== runTokenRef.current) return;
           if (output && output.report.trim().length > 0) {
@@ -160,9 +159,9 @@ export default function StrategyAppClient() {
     }
   }
 
-  async function executeRun(token: number, conn: ConnectionSettings): Promise<void> {
+  async function executeRun(token: number): Promise<void> {
     try {
-      const started = await startRun(conn, {
+      const started = await startRun(CONNECTION, {
         company_name: form.company_name.trim(),
         website_url: form.website_url.trim(),
         locations: form.locations.trim(),
@@ -178,12 +177,12 @@ export default function StrategyAppClient() {
         return;
       }
       if (!started.id && !started.statusUrl) {
-        failRun('The API did not return a job identifier to poll. Check the endpoint configuration.');
+        failRun('The API did not return a job identifier to poll. Please try again.');
         return;
       }
       currentRunRef.current = { id: started.id ?? '', statusUrl: started.statusUrl };
       setStatusText('Job started — polling for completion…');
-      await pollLoop(token, conn);
+      await pollLoop(token);
     } catch (err) {
       if (token !== runTokenRef.current) return;
       failRun(friendlyError(err));
@@ -194,13 +193,6 @@ export default function StrategyAppClient() {
     if (!canSubmit) return;
     const token = runTokenRef.current + 1;
     runTokenRef.current = token;
-    const conn: ConnectionSettings = {
-      baseUrl: baseUrl.trim(),
-      apiKey: apiKey.trim(),
-      authMode,
-      headerName: headerName.trim() || 'X-API-Key',
-    };
-    connRef.current = conn;
     currentRunRef.current = null;
     startTimeRef.current = Date.now();
     deadlineRef.current = Date.now() + MAX_WAIT_MS;
@@ -210,7 +202,7 @@ export default function StrategyAppClient() {
     setStatusText('Starting the workflow…');
     setPhase('running');
     void logReportRun(form.company_name.trim(), 'started').catch(() => undefined);
-    void executeRun(token, conn);
+    void executeRun(token);
   }
 
   function handleCancel(): void {
@@ -220,15 +212,14 @@ export default function StrategyAppClient() {
   }
 
   function handleKeepWaiting(): void {
-    const conn = connRef.current;
-    if (!conn || !currentRunRef.current) {
+    if (!currentRunRef.current) {
       setPhase('form');
       return;
     }
     deadlineRef.current = Date.now() + MAX_WAIT_MS;
     setStatusText('Resumed polling…');
     setPhase('running');
-    void pollLoop(runTokenRef.current, conn);
+    void pollLoop(runTokenRef.current);
   }
 
   function handleNewReport(): void {
@@ -267,22 +258,11 @@ export default function StrategyAppClient() {
               </div>
             </div>
           )}
-          <ConnectionCard
-            baseUrl={baseUrl}
-            apiKey={apiKey}
-            authMode={authMode}
-            headerName={headerName}
-            onBaseUrlChange={setBaseUrl}
-            onApiKeyChange={setApiKey}
-            onAuthModeChange={setAuthMode}
-            onHeaderNameChange={setHeaderName}
-          />
           <StrategyForm
             value={form}
             onChange={setForm}
             onSubmit={handleSubmit}
             canSubmit={canSubmit}
-            connectionReady={connectionReady}
           />
         </div>
       )}

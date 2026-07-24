@@ -36,3 +36,46 @@ export interface PollResult {
   status: string;
   output: FinalOutput | null;
 }
+
+export interface BriefInput {
+  companyName: string;
+  industry: string;
+  objective: string;
+  marketFocus: string;
+  priorityServiceLines?: string;
+}
+
+export interface BriefData {
+  id: string;
+  companyName: string;
+  industry: string;
+  objective: string;
+  marketFocus: string;
+  priorityServiceLines: string | null;
+  createdAt: string;
+  insightCount: number;
+}
+
+export interface InsightData {
+  id: string;
+  title: string;
+  content: string;
+  category: string;
+}
+
+export interface BriefWithInsights {
+  id: string;
+  companyName: string;
+  industry: string;
+  objective: string;
+  marketFocus: string;
+  priorityServiceLines: string | null;
+  createdAt: string;
+  insights: InsightData[];
+}
+
+export interface ActionResult {
+  success: boolean;
+  error?: string;
+  id?: string;
+}

@@ -10,7 +10,6 @@ interface StrategyFormProps {
   onChange: (value: StrategyFormInput) => void;
   onSubmit: () => void;
   canSubmit: boolean;
-  connectionReady: boolean;
 }
 
 const inputClass =
@@ -21,7 +20,6 @@ export default function StrategyForm({
   onChange,
   onSubmit,
   canSubmit,
-  connectionReady,
 }: StrategyFormProps) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
@@ -112,7 +110,8 @@ export default function StrategyForm({
 
         <div>
           <label htmlFor="service-lines" className="mb-1 block text-sm font-medium text-slate-700">
-            Priority Service Lines <span className="text-red-500">*</span>
+            Priority Service Lines{' '}
+            <span className="text-xs font-normal text-slate-400">(optional)</span>
           </label>
           <input
             id="service-lines"
@@ -122,7 +121,9 @@ export default function StrategyForm({
             placeholder="Invisalign, dental implants, teeth whitening"
             className={inputClass}
           />
-          <p className="mt-1 text-xs text-slate-500">Comma-separated list of the services to prioritize.</p>
+          <p className="mt-1 text-xs text-slate-500">
+            Comma-separated list of services to prioritize. Leave blank to let the strategist decide.
+          </p>
         </div>
 
         <div className="rounded-xl border border-slate-200 bg-slate-50/60">
@@ -199,11 +200,6 @@ export default function StrategyForm({
             <Sparkles className="h-4 w-4" />
             Generate Growth Strategy
           </button>
-          {!connectionReady && (
-            <p className="text-center text-xs text-slate-500">
-              Enter your API Base URL and API Key in the Connection card to enable submission.
-            </p>
-          )}
         </div>
       </form>
     </section>

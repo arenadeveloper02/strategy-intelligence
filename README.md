@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Healthcare Growth Strategist
 
 A polished single-page frontend for a deployed "Healthcare Growth Strategist" API workflow. Enter a client's details, kick off the multi-stage AI pipeline asynchronously, watch live progress while it audits the site and benchmarks competitors (~6–9 minutes), then read the returned markdown growth-strategy report in a clean, print-ready layout.
@@ -48,3 +49,46 @@ The build script runs `prisma generate && prisma db push && next build`, so a va
 ## Deploy
 
 Deploy to Vercel with a Neon Postgres database attached — `DATABASE_URL` is injected automatically when the database is connected to the project.
+=======
+# Strategy Intelligence
+
+A strategy intelligence platform where teams submit strategic briefs and receive categorized strategic insights (Market, Growth, Risk, Operations), persisted in Postgres via Prisma.
+
+## Features
+
+- Strategic brief intake with two required segments: Company Profile and Strategic Objectives
+- **Priority Service Lines input is optional** — briefs can be created without it
+- **Connections segment has been removed entirely** from the intake flow
+- AI-assisted insight generation using the Sim API (key configured in `lib/config.ts`) with a resilient local fallback so briefs always get insights
+- Dashboard with brief list, insight counts, industry coverage stats, and delete support
+- Brief detail page with categorized insights and one-click regeneration
+
+## Tech Stack
+
+- Next.js 15 (App Router) + React 19
+- TypeScript (strict)
+- Tailwind CSS v3
+- Prisma + Neon Postgres
+- lucide-react icons
+
+## Local Setup
+
+1. Copy `.env.example` to `.env` and set `DATABASE_URL` to your Postgres connection string.
+2. Install dependencies:
+   ```bash
+   npm install
+   ```
+3. Run the dev server:
+   ```bash
+   npx prisma db push
+   npm run dev
+   ```
+
+## Deploy
+
+On Vercel with Neon, `DATABASE_URL` is injected automatically once the database is connected. The build script runs `prisma generate && prisma db push && next build`.
+
+## Notes
+
+- The external API key is hardcoded in `lib/config.ts` (server-side only) per project requirement. Rotate the key there if needed.
+>>>>>>> 6f918cf (Initial commit)

@@ -7,6 +7,27 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model StrategyBrief {
+  id                   String    @id @default(cuid())
+  companyName          String
+  industry             String
+  objective            String
+  marketFocus          String
+  priorityServiceLines String?
+  createdAt            DateTime  @default(now())
+  insights             Insight[]
+}
+
+model Insight {
+  id        String        @id @default(cuid())
+  title     String
+  content   String
+  category  String
+  briefId   String
+  brief     StrategyBrief @relation(fields: [briefId], references: [id], onDelete: Cascade)
+  createdAt DateTime      @default(now())
+}
+
 model ReportRun {
   id          String   @id @default(cuid())
   companyName String

@@ -1,10 +1,15 @@
 node_modules
 .next
 out
+<<<<<<< HEAD
 build
 .env
 .env.local
 .env*.local
+=======
+.env
+.env.local
+>>>>>>> 6f918cf (Initial commit)
 *.tsbuildinfo
 next-env.d.ts
 .DS_Store
