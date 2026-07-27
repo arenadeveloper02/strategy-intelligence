@@ -15,6 +15,7 @@ model StrategyBrief {
   marketFocus          String
   priorityServiceLines String?
   createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt @default(now())
   insights             Insight[]
 }
 
@@ -26,6 +27,7 @@ model Insight {
   briefId   String
   brief     StrategyBrief @relation(fields: [briefId], references: [id], onDelete: Cascade)
   createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt @default(now())
 }
 
 model ReportRun {
@@ -33,4 +35,5 @@ model ReportRun {
   companyName String
   status      String
   createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt @default(now())
 }

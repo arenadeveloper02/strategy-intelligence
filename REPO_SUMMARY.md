@@ -1,21 +1,21 @@
 # Repository Summary: strategy-intelligence
 
-> Auto-maintained by Sim Development. Last updated: 2026-07-27T09:31:59.147Z.
+> Auto-maintained by Sim Development. Last updated: 2026-07-27T10:13:43.451Z.
 
 ## Overview
 
-Healthcare growth strategy intelligence app: generates prioritized organic-growth strategy reports via a streaming workflow API, plus stored strategy briefs with categorized insights.
+Healthcare growth strategy generator: run the Sim workflow with streaming, render the markdown report, and manage strategy briefs with categorized insights backed by Postgres.
 
 **Repository:** `strategy-intelligence`  
 **File count:** 34
 
 ## Features
 
-- Streaming growth-strategy report generation
-- Nested data.report result parsing for completed runs
-- Markdown report rendering with copy/download/print
-- Strategy brief CRUD with categorized insights
-- Report run logging via Prisma
+- Streaming workflow execution with progress stages
+- Top-level and job-wrapper report resolution (report / output.report / result.output.report)
+- Markdown report rendering with copy, download, and print
+- Strategy briefs with categorized insights (Prisma + Neon Postgres)
+- Run logging via server actions
 
 ## Tech Stack
 
@@ -131,22 +131,22 @@ Healthcare growth strategy intelligence app: generates prioritized organic-growt
 
 ## Latest Change
 
-- **Updated at:** 2026-07-27T09:31:59.147Z
-- **Request:** UPDATE the result-parsing logic only. Do not change the form, styling, or layout.
+- **Updated at:** 2026-07-27T10:13:43.451Z
+- **Request:** UPDATE result-parsing only. Do not change form, styling, or layout.
 
-The problem: the app shows "report came back empty" even when the run succeeds, because it reads the report from the wrong path. The workflow returns the report NESTED under a "data" object, not at the top level.
+The API returns the report at the TOP LEVEL as `report` (NOT under `data`). If using async polling, it is nested under the job wrapper (usually `output.report`). Use this resolver, which checks every level and returns the first non-empty report string:
 
-Change how the completed job result is read. Replace the current report-reading code with this resolver:
-
-  const out = pollResponse.output ?? pollResponse.result ?? pollResponse;
-  const data = out.data ?? out;
-  const report = data.report;         // full markdown report
-  const company = data.company;       // company name
-  const fileSaved = data.file_saved;  // saved filename
+  function extractReport(res) {
+    const roots = [res, res?.output, res?.result, res?.result?.output, res?.data, res?.output?.data];
+    for (const r of roots) {
+      if (r && typeof r.report === "string" && r.report.trim()) {
+        return { report: r.report, company: r.company, fileSaved: r.file_saved };
+      }
+    }
+    return null;
+  }
 
 Rules:
-- Read the report from data.report. Do NOT read response.report or response.output.report at the top level.
-- Only show the "report came back empty" warning if data.report is a genuinely empty string or missing AFTER the job status is "completed". Never show it while still polling.
-- Render data.report as markdown. Use company for the title and fileSaved for the download filename.
-
-Everything else stays exactly as-is.
+- console.log(JSON.stringify(res)) ONCE right before calling extractReport, so the real shape is visible in the browser console.
+- Only show the "report came back empty" warning when extractReport returns null AND the run/job status is complete. Never during polling.
+- Render found.report as markdown; use found.company for the title and found.fileSaved for the download name.

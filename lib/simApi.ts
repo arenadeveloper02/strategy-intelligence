@@ -17,6 +17,7 @@ export const RUN_EXTRA_HEADERS: Record<string, string> = {
 };
 
 export const MAX_WAIT_MS = 15 * 60 * 1000; // overall safety cap (~15 min)
+export const POLL_INTERVAL_MS = 5000;
 
 const COMPLETE_STATUSES = ['completed', 'complete', 'success', 'succeeded', 'finished', 'done'];
 const FAILED_STATUSES = ['failed', 'error', 'errored', 'cancelled', 'canceled', 'timeout', 'timed_out'];
@@ -75,37 +76,47 @@ export function buildHeaders(conn: ConnectionSettings): Record<string, string> {
 }
 
 // ---------------------------------------------------------------------------
-// Result resolution. The workflow returns the report NESTED under a "data"
-// object, not at the top level:
-//   const out = pollResponse.output ?? pollResponse.result ?? pollResponse;
-//   const data = out.data ?? out;
-//   const report = data.report;         // full markdown report
-//   const company = data.company;       // company name
-//   const fileSaved = data.file_saved;  // saved filename
+// Result resolution. The API returns the report at the TOP LEVEL as `report`
+// (NOT under `data`). When using async polling, the report is nested under
+// the job wrapper (usually `output.report`). extractReport checks every
+// plausible root and returns the first non-empty report string:
+//   roots = [res, res.output, res.result, res.result.output, res.data,
+//            res.output.data]
 // ---------------------------------------------------------------------------
-function resolveReportFromResponse(value: unknown): FinalOutput | null {
-  if (!isRecord(value)) return null;
-  const outCandidate: unknown = value.output ?? value.result ?? value;
-  const out = isRecord(outCandidate) ? outCandidate : value;
-  const dataCandidate: unknown = out.data ?? out;
-  const data = isRecord(dataCandidate) ? dataCandidate : out;
-  const report = data.report;
-  if (typeof report === 'string' && report.length > 0) {
-    return {
-      report,
-      company: typeof data.company === 'string' ? data.company : '',
-      file_saved: typeof data.file_saved === 'string' ? data.file_saved : '',
-    };
+export function extractReport(res: unknown): FinalOutput | null {
+  if (!isRecord(res)) return null;
+  const output = isRecord(res.output) ? res.output : null;
+  const result = isRecord(res.result) ? res.result : null;
+  const resultOutput = result && isRecord(result.output) ? result.output : null;
+  const data = isRecord(res.data) ? res.data : null;
+  const outputData = output && isRecord(output.data) ? output.data : null;
+
+  const roots: Record<string, unknown>[] = [res];
+  if (output) roots.push(output);
+  if (result) roots.push(result);
+  if (resultOutput) roots.push(resultOutput);
+  if (data) roots.push(data);
+  if (outputData) roots.push(outputData);
+
+  for (const r of roots) {
+    const report = r.report;
+    if (typeof report === 'string' && report.trim().length > 0) {
+      return {
+        report,
+        company: typeof r.company === 'string' ? r.company : '',
+        file_saved: typeof r.file_saved === 'string' ? r.file_saved : '',
+      };
+    }
   }
   return null;
 }
 
 function extractFinalOutput(value: unknown, depth: number): FinalOutput | null {
   if (depth > 4 || !isRecord(value)) return null;
-  // Primary resolver: read the report from the nested data object.
-  const resolved = resolveReportFromResponse(value);
+  // Primary resolver: top-level report, then the known wrapper roots.
+  const resolved = extractReport(value);
   if (resolved) return resolved;
-  // Fall back to deeper nesting for wrapper envelopes.
+  // Fall back to deeper nesting for unusual wrapper envelopes.
   const nestedKeys = ['output', 'outputs', 'result', 'data', 'response'];
   for (const key of nestedKeys) {
     const found = extractFinalOutput(value[key], depth + 1);
@@ -243,6 +254,8 @@ function parseRawStreamText(text: string): FinalOutput | null {
   if (trimmed.length === 0) return null;
   try {
     const parsed: unknown = JSON.parse(trimmed);
+    // Log the real response shape once, right before extracting the report.
+    console.log(JSON.stringify(parsed));
     const output = extractFinalOutput(parsed, 0);
     if (output) return output;
     return null;
@@ -277,6 +290,8 @@ export async function executeStreamingRun(
     } catch {
       json = null;
     }
+    // Log the real response shape once, right before extracting the report.
+    console.log(JSON.stringify(json));
     return extractFinalOutput(json, 0);
   }
   const reader = res.body ? res.body.getReader() : null;
@@ -336,58 +351,61 @@ export async function executeStreamingRun(
   return parseRawStreamText(raw);
 }
 
+// ---------------------------------------------------------------------------
+// Async start + poll fallback. The start response may already contain the
+// report at the top level; otherwise poll the job and read `output.report`
+// (or the other wrapper roots) via extractReport.
+// ---------------------------------------------------------------------------
+
 export async function startRun(
   conn: ConnectionSettings,
   body: StrategyFormInput
 ): Promise<StartRunResult> {
   const url = normalizeBase(conn.baseUrl) + RUN_PATH;
-  const headers = { ...buildHeaders(conn), ...RUN_EXTRA_HEADERS };
   const res = await fetch(url, {
     method: 'POST',
-    headers,
+    headers: { ...buildHeaders(conn), ...RUN_EXTRA_HEADERS },
     body: JSON.stringify(body),
   });
-  const location = res.headers.get('Location') ?? res.headers.get('location');
+  if (!res.ok && res.status !== 202) {
+    throw new ApiError(res.status, 'Failed to start the workflow run');
+  }
   let json: unknown = null;
   try {
     json = await res.json();
   } catch {
     json = null;
   }
-  if (!res.ok && res.status !== 202) {
-    throw new ApiError(res.status, 'Failed to start the workflow run');
-  }
+  // Log the real response shape once, right before extracting the report.
+  console.log(JSON.stringify(json));
   const output = extractFinalOutput(json, 0);
-  const id = extractRunId(json);
-  const rawStatusUrl = extractStatusUrl(json) ?? location;
-  const statusUrl = rawStatusUrl ? resolveUrl(rawStatusUrl, conn.baseUrl) : null;
-  return { id, statusUrl, output };
+  const statusUrlRaw = extractStatusUrl(json);
+  return {
+    id: extractRunId(json),
+    statusUrl: statusUrlRaw ? resolveUrl(statusUrlRaw, conn.baseUrl) : null,
+    output,
+  };
 }
 
-export async function fetchStatus(
+export async function pollRun(
   conn: ConnectionSettings,
   id: string,
   statusUrl: string | null
 ): Promise<PollResult> {
-  const url =
-    statusUrl && statusUrl.length > 0
-      ? statusUrl
-      : normalizeBase(conn.baseUrl) + STATUS_PATH.replace('{id}', encodeURIComponent(id));
+  const url = statusUrl ?? normalizeBase(conn.baseUrl) + STATUS_PATH.replace('{id}', id);
   const res = await fetch(url, { headers: buildHeaders(conn) });
+  if (!res.ok) {
+    throw new ApiError(res.status, 'Failed to poll the run status');
+  }
   let json: unknown = null;
   try {
     json = await res.json();
   } catch {
     json = null;
   }
-  if (!res.ok) {
-    throw new ApiError(res.status, 'Failed to fetch the run status');
-  }
+  // Log the real response shape once, right before extracting the report.
+  console.log(JSON.stringify(json));
   const status = extractStatus(json) ?? 'unknown';
-  // Only resolve the report from the nested data object; while the job is
-  // still running the output stays null and no "empty report" warning is
-  // ever surfaced. Callers must check isCompleteStatus(status) before
-  // treating a missing/empty report as an error.
   const output = extractFinalOutput(json, 0);
   return { status, output };
 }
@@ -396,7 +414,7 @@ export async function fetchOutput(
   conn: ConnectionSettings,
   id: string
 ): Promise<FinalOutput | null> {
-  const url = normalizeBase(conn.baseUrl) + OUTPUT_PATH.replace('{id}', encodeURIComponent(id));
+  const url = normalizeBase(conn.baseUrl) + OUTPUT_PATH.replace('{id}', id);
   const res = await fetch(url, { headers: buildHeaders(conn) });
   if (!res.ok) return null;
   let json: unknown = null;
@@ -405,5 +423,41 @@ export async function fetchOutput(
   } catch {
     return null;
   }
+  // Log the real response shape once, right before extracting the report.
+  console.log(JSON.stringify(json));
   return extractFinalOutput(json, 0);
+}
+
+// Polls until the job reports a terminal status. IMPORTANT: never treat a
+// missing report as "empty" while the job is still running — only a COMPLETE
+// status with no extractable report should surface the empty-report warning
+// (this function returns null in that case; the caller decides what to show).
+export async function waitForCompletion(
+  conn: ConnectionSettings,
+  start: StartRunResult,
+  isCancelled: () => boolean
+): Promise<FinalOutput | null> {
+  if (start.output && start.output.report.trim().length > 0) return start.output;
+  if (!start.id && !start.statusUrl) return null;
+  const deadline = Date.now() + MAX_WAIT_MS;
+  while (Date.now() < deadline) {
+    if (isCancelled()) return null;
+    const poll = await pollRun(conn, start.id ?? '', start.statusUrl);
+    if (poll.output && poll.output.report.trim().length > 0) return poll.output;
+    if (isFailedStatus(poll.status)) {
+      throw new ApiError(500, `The run finished with status "${poll.status}".`);
+    }
+    if (isCompleteStatus(poll.status)) {
+      // Status is complete but the poll payload had no report — try the
+      // dedicated output endpoint once as a fallback.
+      if (start.id) {
+        const output = await fetchOutput(conn, start.id);
+        if (output && output.report.trim().length > 0) return output;
+      }
+      return null;
+    }
+    // Still running — keep polling; do NOT surface an empty-report warning here.
+    await sleep(POLL_INTERVAL_MS);
+  }
+  return null;
 }
