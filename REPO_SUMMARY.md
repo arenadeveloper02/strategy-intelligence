@@ -1,21 +1,21 @@
 # Repository Summary: strategy-intelligence
 
-> Auto-maintained by Sim Development. Last updated: 2026-07-24T10:47:07.660Z.
+> Auto-maintained by Sim Development. Last updated: 2026-07-27T09:31:59.147Z.
 
 ## Overview
 
-Healthcare growth strategy generator that calls the Sim workflow execute endpoint with streaming enabled, renders the markdown report, and stores strategy briefs with categorized insights in Postgres.
+Healthcare growth strategy intelligence app: generates prioritized organic-growth strategy reports via a streaming workflow API, plus stored strategy briefs with categorized insights.
 
 **Repository:** `strategy-intelligence`  
 **File count:** 34
 
 ## Features
 
-- Streaming workflow execution via POST with stream:true against the Sim execute endpoint
-- Hardcoded X-API-Key authentication matching the provided curl request
-- Live progress panel with elapsed timer, stage indicators, and streamed-character status
-- Markdown report rendering with copy, download, and print actions
-- Strategy brief CRUD with categorized insights persisted in Neon Postgres
+- Streaming growth-strategy report generation
+- Nested data.report result parsing for completed runs
+- Markdown report rendering with copy/download/print
+- Strategy brief CRUD with categorized insights
+- Report run logging via Prisma
 
 ## Tech Stack
 
@@ -131,17 +131,22 @@ Healthcare growth strategy generator that calls the Sim workflow execute endpoin
 
 ## Latest Change
 
-- **Updated at:** 2026-07-24T10:47:07.660Z
-- **Request:** Use the Below Curl Request:
-curl -X POST \
-  -H "X-API-Key: $SIM_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"company_name":"example","website_url":"example","locations":"example","vertical":"example","competitors":"example","budget_tier":"example","priority_service_lines":"example","recipient_email":"example","stream":true}' \
-  https://agent.thearena.ai/api/workflows/bfb13140-ebef-4be9-a441-1eff11e6d1ea/execute
+- **Updated at:** 2026-07-27T09:31:59.147Z
+- **Request:** UPDATE the result-parsing logic only. Do not change the form, styling, or layout.
 
+The problem: the app shows "report came back empty" even when the run succeeds, because it reads the report from the wrong path. The workflow returns the report NESTED under a "data" object, not at the top level.
 
+Change how the completed job result is read. Replace the current report-reading code with this resolver:
 
-Here is he API Key: sk-sim-Ef4OiRRFe5lN_P1oWWdvCIyrPhPkd7X3 
+  const out = pollResponse.output ?? pollResponse.result ?? pollResponse;
+  const data = out.data ?? out;
+  const report = data.report;         // full markdown report
+  const company = data.company;       // company name
+  const fileSaved = data.file_saved;  // saved filename
 
+Rules:
+- Read the report from data.report. Do NOT read response.report or response.output.report at the top level.
+- Only show the "report came back empty" warning if data.report is a genuinely empty string or missing AFTER the job status is "completed". Never show it while still polling.
+- Render data.report as markdown. Use company for the title and fileSaved for the download filename.
 
-You can hardcode the API Key
+Everything else stays exactly as-is.

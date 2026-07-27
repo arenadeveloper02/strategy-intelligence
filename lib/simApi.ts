@@ -74,15 +74,38 @@ export function buildHeaders(conn: ConnectionSettings): Record<string, string> {
   return headers;
 }
 
-function extractFinalOutput(value: unknown, depth: number): FinalOutput | null {
-  if (depth > 4 || !isRecord(value)) return null;
-  if (typeof value.report === 'string' && value.report.length > 0) {
+// ---------------------------------------------------------------------------
+// Result resolution. The workflow returns the report NESTED under a "data"
+// object, not at the top level:
+//   const out = pollResponse.output ?? pollResponse.result ?? pollResponse;
+//   const data = out.data ?? out;
+//   const report = data.report;         // full markdown report
+//   const company = data.company;       // company name
+//   const fileSaved = data.file_saved;  // saved filename
+// ---------------------------------------------------------------------------
+function resolveReportFromResponse(value: unknown): FinalOutput | null {
+  if (!isRecord(value)) return null;
+  const outCandidate: unknown = value.output ?? value.result ?? value;
+  const out = isRecord(outCandidate) ? outCandidate : value;
+  const dataCandidate: unknown = out.data ?? out;
+  const data = isRecord(dataCandidate) ? dataCandidate : out;
+  const report = data.report;
+  if (typeof report === 'string' && report.length > 0) {
     return {
-      report: value.report,
-      company: typeof value.company === 'string' ? value.company : '',
-      file_saved: typeof value.file_saved === 'string' ? value.file_saved : '',
+      report,
+      company: typeof data.company === 'string' ? data.company : '',
+      file_saved: typeof data.file_saved === 'string' ? data.file_saved : '',
     };
   }
+  return null;
+}
+
+function extractFinalOutput(value: unknown, depth: number): FinalOutput | null {
+  if (depth > 4 || !isRecord(value)) return null;
+  // Primary resolver: read the report from the nested data object.
+  const resolved = resolveReportFromResponse(value);
+  if (resolved) return resolved;
+  // Fall back to deeper nesting for wrapper envelopes.
   const nestedKeys = ['output', 'outputs', 'result', 'data', 'response'];
   for (const key of nestedKeys) {
     const found = extractFinalOutput(value[key], depth + 1);
@@ -357,10 +380,14 @@ export async function fetchStatus(
   } catch {
     json = null;
   }
-  if (!res.ok && res.status !== 202) {
-    throw new ApiError(res.status, 'Status check failed');
+  if (!res.ok) {
+    throw new ApiError(res.status, 'Failed to fetch the run status');
   }
-  const status = extractStatus(json) ?? 'running';
+  const status = extractStatus(json) ?? 'unknown';
+  // Only resolve the report from the nested data object; while the job is
+  // still running the output stays null and no "empty report" warning is
+  // ever surfaced. Callers must check isCompleteStatus(status) before
+  // treating a missing/empty report as an error.
   const output = extractFinalOutput(json, 0);
   return { status, output };
 }
@@ -369,14 +396,14 @@ export async function fetchOutput(
   conn: ConnectionSettings,
   id: string
 ): Promise<FinalOutput | null> {
-  if (!id) return null;
   const url = normalizeBase(conn.baseUrl) + OUTPUT_PATH.replace('{id}', encodeURIComponent(id));
+  const res = await fetch(url, { headers: buildHeaders(conn) });
+  if (!res.ok) return null;
+  let json: unknown = null;
   try {
-    const res = await fetch(url, { headers: buildHeaders(conn) });
-    if (!res.ok) return null;
-    const json: unknown = await res.json();
-    return extractFinalOutput(json, 0);
+    json = await res.json();
   } catch {
     return null;
   }
+  return extractFinalOutput(json, 0);
 }
